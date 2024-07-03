@@ -3,45 +3,48 @@ const path = require('path');
 
 const { validationResult } = require('express-validator/check');
 
-const Post = require('../models/post');
-const User = require('../models/user');
+const io = require("../socket");
+const Post = require("../models/post");
+const User = require("../models/user");
+const user = require("../models/user");
 
-exports.getPosts = (req, res, next) => {
+// async/await
+
+exports.getPosts = async (req, res, next) => {
   const currentPage = req.query.page || 1;
   const perPage = 2;
-  let totalItems;
-  Post.find()
-    .countDocuments()
-    .then(count => {
-      totalItems = count;
-      return Post.find()
-        .skip((currentPage - 1) * perPage)
-        .limit(perPage);
-    })
-    .then(posts => {
-      res.status(200).json({
-        message: 'Fetched posts successfully.',
-        posts: posts,
-        totalItems: totalItems
-      });
-    })
-    .catch(err => {
-      if (!err.statusCode) {
-        err.statusCode = 500;
-      }
-      next(err);
+
+  try {
+    const totalItems = await Post.find().countDocuments();
+
+    const posts = await Post.find()
+      .populate("creator")
+      .sort({ createdAt: -1 })
+      .skip((currentPage - 1) * perPage)
+      .limit(perPage);
+
+    res.status(200).json({
+      message: "Fetched posts successfully.",
+      posts: posts,
+      totalItems: totalItems,
     });
+  } catch (error) {
+    if (!err.statusCode) {
+      err.statusCode = 500;
+    }
+    next(err);
+  }
 };
 
 exports.createPost = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    const error = new Error('Validation failed, entered data is incorrect.');
+    const error = new Error("Validation failed, entered data is incorrect.");
     error.statusCode = 422;
     throw error;
   }
   if (!req.file) {
-    const error = new Error('No image provided.');
+    const error = new Error("No image provided.");
     error.statusCode = 422;
     throw error;
   }
@@ -53,26 +56,30 @@ exports.createPost = (req, res, next) => {
     title: title,
     content: content,
     imageUrl: imageUrl,
-    creator: req.userId
+    creator: req.userId,
   });
   post
     .save()
-    .then(result => {
+    .then((result) => {
       return User.findById(req.userId);
     })
-    .then(user => {
+    .then((user) => {
       creator = user;
       user.posts.push(post);
       return user.save();
     })
-    .then(result => {
+    .then((result) => {
+      io.getIO().emit("posts", {
+        action: "create",
+        post: { ...post._doc, creator: { _id: req.userId, name: user.name } },
+      });
       res.status(201).json({
-        message: 'Post created successfully!',
+        message: "Post created successfully!",
         post: post,
-        creator: { _id: creator._id, name: creator.name }
+        creator: { _id: creator._id, name: creator.name },
       });
     })
-    .catch(err => {
+    .catch((err) => {
       if (!err.statusCode) {
         err.statusCode = 500;
       }
@@ -119,14 +126,15 @@ exports.updatePost = (req, res, next) => {
     throw error;
   }
   Post.findById(postId)
-    .then(post => {
+    .populate("creator")
+    .then((post) => {
       if (!post) {
-        const error = new Error('Could not find post.');
+        const error = new Error("Could not find post.");
         error.statusCode = 404;
         throw error;
       }
-      if (post.creator.toString() !== req.userId) {
-        const error = new Error('Not authorized!');
+      if (post.creator._id.toString() !== req.userId) {
+        const error = new Error("Not authorized!");
         error.statusCode = 403;
         throw error;
       }
@@ -138,10 +146,11 @@ exports.updatePost = (req, res, next) => {
       post.content = content;
       return post.save();
     })
-    .then(result => {
-      res.status(200).json({ message: 'Post updated!', post: result });
+    .then((result) => {
+      io.getIO().emit("posts", { action: "update", post: result });
+      res.status(200).json({ message: "Post updated!", post: result });
     })
-    .catch(err => {
+    .catch((err) => {
       if (!err.statusCode) {
         err.statusCode = 500;
       }
